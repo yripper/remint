@@ -1,0 +1,10 @@
+# pnpm 11 only runs dependency build scripts that are listed here.
+allowBuilds:
+  # Needed by wrangler (bundling and the local workerd runtime).
+  esbuild: true
+  workerd: true
+  # Optional native speedups with pure-JS fallbacks; the app never needed them.
+  '@reown/appkit': false
+  bufferutil: false
+  secp256k1: false
+  utf-8-validate: false
