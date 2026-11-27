@@ -7,7 +7,8 @@ import { formatUnits, toStellarUnits } from '../lib/amount'
 import { describeError, NONCE_ALREADY_USED, contractErrorCode } from '../lib/errors'
 import { evmApproveAndBurn, evmOftSend } from '../lib/evm'
 import type { OftTransfer } from '../lib/oft'
-import { costsFor, loadRouteInfo, loadUsdtRouteInfo } from '../lib/quote'
+import { amountForReceive } from '../lib/fees'
+import { costsFor, loadRouteInfo, loadUsdtRouteInfo, pickQuote } from '../lib/quote'
 import { bytes32ToSolanaAddress, oftRecipientBytes32 } from '../lib/recipient'
 import { planBurn, type BurnPlan } from '../lib/route'
 import { solanaBurn } from '../lib/solana'
@@ -23,6 +24,8 @@ export interface BridgeRequest {
   amount: bigint
   recipient: string
   fast: boolean
+  /** Exact out: what must land. `amount` is then what the form quoted for it, and the most it may cost. */
+  receive?: bigint
 }
 
 export type BridgeStep = 'idle' | 'quoting' | 'switching' | 'approve' | 'burn'
@@ -129,6 +132,11 @@ function newTransfer(req: BridgeRequest, receive: bigint, mode: Transfer['mode']
   }
 }
 
+function feesRose(req: BridgeRequest, needed: bigint): string {
+  const target = req.receive ?? 0n
+  return `Circle's fees went up since the quote, so landing ${formatUnits(target)} USDC now takes ${formatUnits(needed)}. Check the new amount and try again.`
+}
+
 /** A transfer ready to go: the record to track, and the wallet steps that send it. */
 interface Prepared {
   transfer: Transfer
@@ -142,7 +150,12 @@ async function prepareUsdc(req: BridgeRequest, signers: Signers, setStep: (step:
   if (info.stellarRecipientReady === false) {
     throw new Error('The Stellar recipient has no USDC trustline. Add one before sending, or the claim will fail.')
   }
-  const { maxFee, receive } = costsFor(info, req.source, req.fast, req.amount)
+  // Exact out: size the burn from this fresh quote. A cheaper quote lowers the cost; a
+  // pricier one stops here rather than spend more than the form showed.
+  const amount = req.receive === undefined ? req.amount : amountForReceive(req.receive, pickQuote(info, req.source, req.fast))
+  if (amount > req.amount) throw new Error(feesRose(req, amount))
+  const sent: BridgeRequest = { ...req, amount }
+  const { maxFee, receive } = costsFor(info, req.source, req.fast, amount)
   if (receive <= 0n) throw new Error('The amount must be larger than the fees')
   const plan = planBurn(NETWORK, {
     source: req.source,
@@ -153,9 +166,9 @@ async function prepareUsdc(req: BridgeRequest, signers: Signers, setStep: (step:
     solanaAtaExists: info.solanaAtaExists,
   })
   return {
-    transfer: newTransfer(req, receive, plan.mode, plan.finality === 1000),
+    transfer: newTransfer(sent, receive, plan.mode, plan.finality === 1000),
     execute: (markApproving) => {
-      const args: BurnArgs = { amount: req.amount, maxFee, plan, setStep, markApproving }
+      const args: BurnArgs = { amount, maxFee, plan, setStep, markApproving }
       if (req.source.kind === 'stellar') return burnOnStellar(signers, req.destination, args)
       if (req.source.kind === 'evm') return burnOnEvm(signers, req.source, req.destination, args)
       return burnOnSolana(signers, req.destination, args)
@@ -178,6 +191,9 @@ async function prepareUsdt(req: BridgeRequest, signers: Signers, setStep: (step:
   if (req.amount > quote.maxAmount) throw new Error(`This route takes at most ${formatUnits(quote.maxAmount)} USDT right now`)
   if (req.amount < quote.minAmount) throw new Error(`This route needs at least ${formatUnits(quote.minAmount)} USDT`)
   if (quote.amountReceived <= 0n) throw new Error('The amount must be larger than the fees')
+  if (req.receive !== undefined && quote.amountReceived < req.receive) {
+    throw new Error(`USDT0 fees went up since the quote, so ${formatUnits(req.amount)} USDT no longer lands ${formatUnits(req.receive)}. Check the new amount and try again.`)
+  }
 
   const transfer: OftTransfer = {
     route,

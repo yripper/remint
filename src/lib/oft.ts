@@ -39,6 +39,17 @@ export function scaleReceived(quote: OftQuote, amount: bigint): bigint {
   return (amount * quote.amountReceived) / quote.amountSent
 }
 
+/** Exact out: the smallest amount that `scaleReceived` lands at `receive` or more. */
+export function amountForOftReceive(quote: OftQuote, receive: bigint): bigint {
+  if (receive <= 0n) return 0n
+  if (quote.amountSent === 0n) return receive
+  if (quote.amountReceived <= 0n) throw new Error('Nothing would arrive on this route')
+  let amount = (receive * quote.amountSent + quote.amountReceived - 1n) / quote.amountReceived
+  while (scaleReceived(quote, amount) < receive) amount += 1n
+  while (amount > 1n && scaleReceived(quote, amount - 1n) >= receive) amount -= 1n
+  return amount
+}
+
 /** USDT0 charges nothing on OFT routes and 3 bps on the Legacy Mesh; read it off the quote. */
 export function feeBps(quote: OftQuote): number {
   if (quote.amountSent === 0n) return 0

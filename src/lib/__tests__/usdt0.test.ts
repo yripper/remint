@@ -5,7 +5,7 @@ import { chainById } from '../../config/chains'
 import { USDT0, usdt0Route } from '../../config/usdt0'
 import { formatSignificant } from '../amount'
 import { interpretLzScan } from '../lzscan'
-import { feeBps, scaleReceived, withFeeBuffer, type OftQuote } from '../oft'
+import { amountForOftReceive, feeBps, scaleReceived, withFeeBuffer, type OftQuote } from '../oft'
 import { isValidRecipientFor, oftRecipientBytes32 } from '../recipient'
 import { oftSendParamScVal } from '../stellar'
 
@@ -133,6 +133,23 @@ describe('OFT quote math', () => {
 
   it('scales a quote to another amount', () => {
     expect(scaleReceived(legacy, 20_000_000n)).toBe(19_994_000n)
+  })
+
+  it('sends exactly the target on a fee-free OFT route', () => {
+    expect(amountForOftReceive({ ...legacy, amountReceived: legacy.amountSent }, 12_345_678n)).toBe(12_345_678n)
+  })
+
+  it('grosses up a Legacy Mesh target to the smallest amount that lands it', () => {
+    for (const target of [1n, 9_997_000n, 19_994_000n, 123_456_789n]) {
+      const amount = amountForOftReceive(legacy, target)
+      expect(scaleReceived(legacy, amount)).toBeGreaterThanOrEqual(target)
+      expect(scaleReceived(legacy, amount - 1n)).toBeLessThan(target)
+    }
+    expect(amountForOftReceive(legacy, 9_997_000n)).toBe(10_000_000n)
+  })
+
+  it('throws when nothing would land', () => {
+    expect(() => amountForOftReceive({ ...legacy, amountReceived: 0n }, 1n)).toThrow()
   })
 
   it('adds 5% headroom to the messaging fee', () => {

@@ -35,10 +35,16 @@ export function parseFeeQuote(payload: unknown, finality: number, forward: boole
   return { finality, protocolBps: entry.minimumFee, forwardFee: BigInt(Math.ceil(med)) }
 }
 
+/** Circle quotes fractional bps (e.g. 1.3), so fees are computed in millionths of the amount. */
+const FEE_SCALE = 1_000_000n
+
+function feeMillionths(protocolBps: number): bigint {
+  return BigInt(Math.ceil(protocolBps * 100))
+}
+
 /** Protocol fee in CCTP units: basis points of the amount, rounded up. */
 export function protocolFee(amount: bigint, protocolBps: number): bigint {
-  const bpsTimesHundred = BigInt(Math.ceil(protocolBps * 100))
-  return (amount * bpsTimesHundred + 999_999n) / 1_000_000n
+  return (amount * feeMillionths(protocolBps) + FEE_SCALE - 1n) / FEE_SCALE
 }
 
 /**
@@ -47,6 +53,22 @@ export function protocolFee(amount: bigint, protocolBps: number): bigint {
  */
 export function computeMaxFee(amount: bigint, quote: FeeQuote): bigint {
   return protocolFee(amount, quote.protocolBps) + quote.forwardFee
+}
+
+/**
+ * Exact out: the smallest burn amount whose `amount - maxFee` lands at least `receive`.
+ * maxFee caps what Circle takes, so the recipient never gets less than the target.
+ */
+export function amountForReceive(receive: bigint, quote: FeeQuote): bigint {
+  if (receive <= 0n) return 0n
+  const keep = FEE_SCALE - feeMillionths(quote.protocolBps)
+  if (keep <= 0n) throw new Error('Circle quoted a fee that takes the whole amount')
+  const lands = (amount: bigint): bigint => amount - computeMaxFee(amount, quote)
+  // The closed form lands within a unit or two of the answer; the fee's rounding settles the rest.
+  let amount = ((receive + quote.forwardFee) * FEE_SCALE + keep - 1n) / keep
+  while (lands(amount) < receive) amount += 1n
+  while (lands(amount - 1n) >= receive) amount -= 1n
+  return amount
 }
 
 export interface FeeRequest {

@@ -30,8 +30,14 @@ interface BridgeFormProps {
   /** Connected address for the source chain's wallet family. */
   owner: string | null
   balance: SourceBalanceState
+  /** Which field the user typed in; the other one is computed from the quote. */
+  side: 'send' | 'receive'
   amountInput: string
   onAmountInput: (value: string) => void
+  /** Exact out: the amount that must land. */
+  receiveInput: string
+  onReceiveInput: (value: string) => void
+  /** What gets sent: typed, or worked back from `receiveInput`. */
   amount: bigint | null
   recipient: string
   onRecipient: (value: string) => void
@@ -81,6 +87,11 @@ function recipientError(asset: AssetId, kind: Chain['kind']): string {
 /** Route limits read better as whole tokens; rounding down keeps the shown cap honest. */
 function wholeUnits(units: bigint): string {
   return formatUnits(units - (units % 1_000_000n), 6, 0)
+}
+
+/** A computed amount shown in an editable field: no grouping, so editing it parses cleanly. */
+function fieldUnits(units: bigint | null): string {
+  return units !== null && units > 0n ? formatUnits(units, 6, 2).replace(/,/g, '') : ''
 }
 
 function nativeCurrency(chain: Chain): { symbol: string; decimals: number } {
@@ -219,7 +230,7 @@ function UsdtCosts({ props, data }: { props: BridgeFormProps; data: UsdtRouteInf
 }
 
 export function BridgeForm(props: BridgeFormProps) {
-  const { asset, source, destination, owner, balance, amountInput, amount, recipient, quote, step, error, fast } = props
+  const { asset, source, destination, owner, balance, side, amountInput, receiveInput, amount, recipient, quote, step, error, fast } = props
   const recipientValid = isValidRecipientFor(asset, destination.kind, recipient)
   const recipientTouched = recipient.trim().length > 0
   const busy = step !== 'idle'
@@ -236,6 +247,15 @@ export function BridgeForm(props: BridgeFormProps) {
     const next = sanitizeAmountInput(raw)
     if (next !== null) props.onAmountInput(next)
   }
+
+  const onReceiveChange = (raw: string) => {
+    const next = sanitizeAmountInput(raw)
+    if (next !== null) props.onReceiveInput(next)
+  }
+
+  const quoting = summary.loading || !summary.ready
+  const sendValue = side === 'send' ? amountInput : fieldUnits(amount)
+  const receiveValue = side === 'receive' ? receiveInput : fieldUnits(summary.receive)
 
   const onCta = () => {
     if (cta.action === 'connect') props.onConnectSource()
@@ -265,9 +285,9 @@ export function BridgeForm(props: BridgeFormProps) {
             className="amount"
             inputMode="decimal"
             autoComplete="off"
-            placeholder="0.00"
-            aria-label={`Amount of ${symbol} to bridge`}
-            value={amountInput}
+            placeholder={side === 'receive' && receiveInput && quoting ? '…' : '0.00'}
+            aria-label={`Amount of ${symbol} to send`}
+            value={sendValue}
             onChange={(e) => onAmountChange(e.target.value)}
             disabled={busy}
           />
@@ -326,13 +346,22 @@ export function BridgeForm(props: BridgeFormProps) {
           <ChainPicker value={destination} chains={props.destinations} onChange={props.onDestination} label="Destination chain" disabled={busy} optionDetail={optionDetail} />
         </header>
 
-        <div className="receive">
+        <label className="receive">
           <span className="receive__label">You receive</span>
-          <span className="receive__value" aria-live="polite">
-            {summary.receive !== null ? formatUnits(summary.receive > 0n ? summary.receive : 0n, 6, 2) : summary.loading && amount ? '…' : '0.00'}
+          <span className="receive__value">
+            <input
+              className="receive__input"
+              inputMode="decimal"
+              autoComplete="off"
+              placeholder={side === 'send' && amount && summary.loading ? '…' : '0.00'}
+              aria-label={`Amount of ${destSymbol} to receive`}
+              value={receiveValue}
+              onChange={(e) => onReceiveChange(e.target.value)}
+              disabled={busy}
+            />
             <span className="receive__unit">{destSymbol}</span>
           </span>
-        </div>
+        </label>
 
         <label className="recipient">
           <span className="recipient__label">Recipient on {destination.name}</span>

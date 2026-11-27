@@ -1,9 +1,10 @@
+import type { AssetId } from '../config/assets'
 import type { Chain } from '../config/chains'
 import { NETWORK } from '../config/networks'
 import { STELLAR_USDT0_ASSET, USDT0, usdt0Route, type Usdt0Route } from '../config/usdt0'
 import { quoteEvmOft } from './evm'
-import { computeMaxFee, fetchFeeQuotes, type FeeQuote, type FeeQuotes } from './fees'
-import type { OftQuote, OftTransfer } from './oft'
+import { amountForReceive, computeMaxFee, fetchFeeQuotes, type FeeQuote, type FeeQuotes } from './fees'
+import { amountForOftReceive, type OftQuote, type OftTransfer } from './oft'
 import { isValidRecipient, isValidRecipientFor, oftRecipientBytes32 } from './recipient'
 import { accountExists, deriveUsdcAta } from './solana'
 import { canReceiveUsdc, quoteStellarOft } from './stellar'
@@ -56,6 +57,30 @@ export interface Costs {
   quote: FeeQuote
   maxFee: bigint
   receive: bigint
+}
+
+/**
+ * Exact out: what to send so `receive` lands, from the quote of whichever rail the asset uses.
+ * Null until that quote is in.
+ */
+export function sendForReceive(
+  asset: AssetId,
+  receive: bigint,
+  usdc: RouteInfo | null,
+  usdt: UsdtRouteInfo | null,
+  source: Chain,
+  fast: boolean,
+): bigint | null {
+  try {
+    if (asset === 'usdc') return usdc ? amountForReceive(receive, pickQuote(usdc, source, fast)) : null
+    if (!usdt) return null
+    const amount = amountForOftReceive(usdt.quote, receive)
+    // The form scales a quote taken at another size; one unit of headroom absorbs the
+    // on-chain fee rounding differently, so the fresh quote at send time still clears the target.
+    return amount > receive ? amount + 1n : amount
+  } catch {
+    return null
+  }
 }
 
 export function costsFor(info: RouteInfo, source: Chain, fast: boolean, amount: bigint): Costs {

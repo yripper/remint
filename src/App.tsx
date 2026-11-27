@@ -15,6 +15,7 @@ import { useStellarWallet } from './hooks/useStellarWallet'
 import { useTransfers } from './hooks/useTransfers'
 import { useUsdtQuote } from './hooks/useUsdtQuote'
 import { parseUnits } from './lib/amount'
+import { sendForReceive } from './lib/quote'
 import { readPref, writePref } from './lib/prefs'
 
 interface RoutePref {
@@ -42,6 +43,9 @@ function loadRoute(): RoutePref {
   return DEFAULT_ROUTE
 }
 
+/** Which amount the user typed: the one sent, or (exact out) the one that must land. */
+type AmountSide = 'send' | 'receive'
+
 type ModalFamily = Exclude<ChainKind, 'stellar'>
 
 interface ModalState {
@@ -68,6 +72,8 @@ export default function App() {
 
   const [route, setRoute] = useState<RoutePref>(loadRoute)
   const [amountInput, setAmountInput] = useState('')
+  const [receiveInput, setReceiveInput] = useState('')
+  const [side, setSide] = useState<AmountSide>('send')
   // Recipients are kept per address format, so one EVM address carries across EVM chains.
   const [recipients, setRecipients] = useState<Partial<Record<ChainKind, string>>>({})
   const [activeId, setActiveId] = useState<string | null>(null)
@@ -94,11 +100,28 @@ export default function App() {
     setRecipients((prev) => ({ ...prev, [kind]: value }))
   }, [])
 
-  const amount = useMemo(() => parseUnits(amountInput), [amountInput])
+  const typedAmount = useMemo(() => parseUnits(amountInput), [amountInput])
+  const receiveTarget = useMemo(() => (side === 'receive' ? parseUnits(receiveInput) : null), [side, receiveInput])
+  const fast = asset === 'usdc' && route.fast
   const balance = useSourceBalance(asset, source, owner)
   // Both hooks always run (hook rules); each idles when its asset isn't selected.
   const quote = useRouteQuote(source, destination, recipient, asset === 'usdc')
-  const usdtQuote = useUsdtQuote({ enabled: asset === 'usdt', source, destination, recipient, amount, owner })
+  // OFT fees are linear, so in exact-out mode quoting at the target size is close enough to size the send.
+  const quoteAmount = side === 'send' ? typedAmount : receiveTarget
+  const usdtQuote = useUsdtQuote({ enabled: asset === 'usdt', source, destination, recipient, amount: quoteAmount, owner })
+  const amount =
+    side === 'send' || receiveTarget === null || receiveTarget <= 0n
+      ? side === 'send' ? typedAmount : receiveTarget
+      : sendForReceive(asset, receiveTarget, quote.data, usdtQuote.data, source, fast)
+
+  const typeSend = useCallback((value: string) => {
+    setAmountInput(value)
+    setSide('send')
+  }, [])
+  const typeReceive = useCallback((value: string) => {
+    setReceiveInput(value)
+    setSide('receive')
+  }, [])
 
   const signers: Signers = useMemo(
     () => ({ stellar: { address: stellar.address, sign: stellar.sign }, evm: evm.connection, solana: solana.connection }),
@@ -108,6 +131,8 @@ export default function App() {
   const refreshBalance = balance.refresh
   const onBurned = useCallback(() => {
     setAmountInput('')
+    setReceiveInput('')
+    setSide('send')
     refreshBalance()
   }, [refreshBalance])
 
@@ -157,7 +182,8 @@ export default function App() {
 
   const submit = async () => {
     if (amount === null) return
-    const id = await bridge.run({ asset, source, destination, amount, recipient, fast: asset === 'usdc' && route.fast })
+    const receive = side === 'receive' && receiveTarget !== null ? receiveTarget : undefined
+    const id = await bridge.run({ asset, source, destination, amount, recipient, fast, receive })
     if (id) setActiveId(id)
   }
 
@@ -238,8 +264,11 @@ export default function App() {
               canSwap={canSwap}
               owner={owner}
               balance={balance}
+              side={side}
               amountInput={amountInput}
-              onAmountInput={setAmountInput}
+              onAmountInput={typeSend}
+              receiveInput={receiveInput}
+              onReceiveInput={typeReceive}
               amount={amount}
               recipient={recipient}
               onRecipient={(value) => setRecipient(destination.kind, value)}

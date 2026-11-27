@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { computeMaxFee, parseFeeQuote, parseFeeQuotes, protocolFee } from '../fees'
+import { amountForReceive, computeMaxFee, parseFeeQuote, parseFeeQuotes, protocolFee, type FeeQuote } from '../fees'
 
 // Live shape from GET /v2/burn/USDC/fees/6/5?forward=true (Base to Solana).
 const LIVE_SHAPE = [
@@ -50,5 +50,28 @@ describe('protocolFee and computeMaxFee', () => {
   })
   it('adds the forwarding fee', () => {
     expect(computeMaxFee(10_000_000n, { finality: 1000, protocolBps: 1.3, forwardFee: 101_066n })).toBe(102_366n)
+  })
+})
+
+describe('amountForReceive', () => {
+  const lands = (amount: bigint, quote: FeeQuote) => amount - computeMaxFee(amount, quote)
+  const fast: FeeQuote = { finality: 1000, protocolBps: 1.3, forwardFee: 101_066n }
+  const standard: FeeQuote = { finality: 2000, protocolBps: 0, forwardFee: 0n }
+
+  it('adds nothing when the route is free', () => {
+    expect(amountForReceive(10_000_000n, standard)).toBe(10_000_000n)
+  })
+  it('adds the forwarding fee on a flat-fee route', () => {
+    expect(amountForReceive(10_000_000n, { ...standard, forwardFee: 101_066n })).toBe(10_101_066n)
+  })
+  it('returns the smallest amount that lands at least the target', () => {
+    for (const target of [1n, 999_999n, 10_000_000n, 123_456_789n, 5_000_000_000_000n]) {
+      const amount = amountForReceive(target, fast)
+      expect(lands(amount, fast)).toBeGreaterThanOrEqual(target)
+      expect(lands(amount - 1n, fast)).toBeLessThan(target)
+    }
+  })
+  it('returns 0 for an empty target', () => {
+    expect(amountForReceive(0n, fast)).toBe(0n)
   })
 })
